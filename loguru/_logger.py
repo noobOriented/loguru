@@ -97,26 +97,23 @@ from __future__ import annotations
 
 import builtins
 import contextlib
+import contextvars
 import functools
+import inspect
 import logging
+import os
+import os.path
 import re
 import sys
 import threading
-import types
 import typing as t
 import warnings
-from collections.abc import AsyncGenerator
-from inspect import isasyncgenfunction, isclass, iscoroutinefunction, isgeneratorfunction
 from multiprocessing import current_process, get_context
 from multiprocessing.context import BaseContext
-from os import PathLike
-from os.path import basename, splitext
-from threading import current_thread
 
 from . import _asyncio_loop, _colorama, _defaults, _filters
 from ._better_exceptions import ExceptionFormatter
 from ._colorizer import Colorizer
-from ._contextvars import ContextVar
 from ._datetime import aware_now
 from ._error_interceptor import ErrorInterceptor
 from ._file_sink import FileSink
@@ -152,7 +149,7 @@ class Level(t.NamedTuple):
 
 start_time = aware_now()
 
-context = ContextVar("loguru_context", default={})
+context = contextvars.ContextVar("loguru_context", default={})
 
 
 class Core:
@@ -264,15 +261,15 @@ class Logger:
     """
 
     class Options(t.NamedTuple):
-        exception: bool | ExcInfo | BaseException | None = None
-        record: bool = False
-        lazy: bool = False
-        colors: bool = False
-        raw: bool = False
-        capture: bool = True
-        depth: int = 0
-        patchers: t.Sequence[PatcherFunction] = ()
-        extra: t.Mapping = types.MappingProxyType({})
+        exception: bool | ExcInfo | BaseException | None
+        record: bool
+        lazy: bool
+        colors: bool
+        raw: bool
+        capture: bool
+        depth: int
+        patchers: list[PatcherFunction]
+        extra: dict[str, t.Any]
 
     def __init__(self, core: Core, options: Options):
         self._core = core
@@ -283,7 +280,9 @@ class Logger:
 
     def add(
         self,
-        sink: str | PathLikeStr | t.TextIO | Writable| t.Callable[[Message], None] | logging.Handler,
+        sink: (
+            str | PathLikeStr | t.TextIO | Writable| t.Callable[[Message], None] | logging.Handler
+        ),
         *,
         level: str | int =_defaults.LOGURU_LEVEL,
         format: str | FormatFunction=_defaults.LOGURU_FORMAT,
@@ -839,7 +838,7 @@ class Logger:
         if colorize is None and serialize:
             colorize = False
 
-        if isinstance(sink, (str, PathLike)):
+        if isinstance(sink, (str, os.PathLike)):
             path = sink
             name = "'%s'" % path
 
@@ -876,7 +875,7 @@ class Logger:
             encoding = getattr(sink, "encoding", None)
             terminator = ""
             exception_prefix = "\n"
-        elif iscoroutinefunction(sink) or iscoroutinefunction(
+        elif inspect.iscoroutinefunction(sink) or inspect.iscoroutinefunction(
             getattr(sink, "__call__", None)  # noqa: B004
         ):
             name = getattr(sink, "__name__", None) or repr(sink)
@@ -900,7 +899,7 @@ class Logger:
                         "but none has been passed as argument and none is currently running."
                     ) from e
 
-            coro = sink if iscoroutinefunction(sink) else sink.__call__
+            coro = sink if inspect.iscoroutinefunction(sink) else sink.__call__
             wrapped_sink = AsyncSink(coro, loop, error_interceptor)
             encoding = "utf8"
             terminator = "\n"
@@ -1179,16 +1178,14 @@ class Logger:
 
     def catch(
         self,
-        exception: type[BaseException] | tuple[type[BaseException], ...] = Exception,
+        exception: t.Callable | type[BaseException] | tuple[type[BaseException], ...] = Exception,
         *,
         level: str | int = "ERROR",
         reraise: bool = False,
         onerror: t.Callable[[BaseException], None] | None = None,
         exclude: type[BaseException] | tuple[type[BaseException], ...] | None = None,
         default: t.Any = None,
-        message: str = "An error has been caught in function '{record[function]}', "
-        "process '{record[process].name}' ({record[process].id}), "
-        "thread '{record[thread].name}' ({record[thread].id}):"
+        message: str = _defaults.LOGURU_CATCH_MESSAGE,
     ):
         """Return a decorator to automatically log possibly caught error in wrapped function.
 
@@ -1263,7 +1260,7 @@ class Logger:
         ...     1 / 0
         """
         if callable(exception) and (
-            not isclass(exception) or not issubclass(exception, BaseException)
+            not inspect.isclass(exception) or not issubclass(exception, BaseException)
         ):
             return self.catch()(exception)
 
@@ -1301,7 +1298,7 @@ class Logger:
 
                 catch_options = logger._options._replace(
                     exception=(type_, value, traceback_),
-                    deptp=depth,
+                    depth=depth,
                     lazy=True,
                 )
 
@@ -1320,7 +1317,7 @@ class Logger:
                 return not reraise
 
             def __call__(self, function):
-                if isclass(function):
+                if inspect.isclass(function):
                     raise TypeError(
                         "Invalid object decorated with 'catch()', it must be a function, "
                         "not a class (tried to wrap '%s')" % function.__name__
@@ -1328,23 +1325,23 @@ class Logger:
 
                 catcher = Catcher(True)
 
-                if iscoroutinefunction(function):
+                if inspect.iscoroutinefunction(function):
 
                     async def catch_wrapper(*args, **kwargs):
                         with catcher:
                             return await function(*args, **kwargs)
                         return default
 
-                elif isgeneratorfunction(function):
+                elif inspect.isgeneratorfunction(function):
 
                     def catch_wrapper(*args, **kwargs):
                         with catcher:
                             return (yield from function(*args, **kwargs))
                         return default
 
-                elif isasyncgenfunction(function):
+                elif inspect.isasyncgenfunction(function):
 
-                    class AsyncGenCatchWrapper(AsyncGenerator):
+                    class AsyncGenCatchWrapper(t.AsyncGenerator):
 
                         def __init__(self, gen):
                             self._gen = gen
@@ -1995,7 +1992,7 @@ class Logger:
         ...     for log in logger.parse(file, reg, cast=cast):
         ...         print(log["date"], log["something_else"])
         """
-        if isinstance(file, (str, PathLike)):
+        if isinstance(file, (str, os.PathLike)):
 
             @contextlib.contextmanager
             def opener():
@@ -2065,7 +2062,7 @@ class Logger:
     def _log(
         self,
         level: str | int, message: str | object, args: t.Sequence, kwargs: dict,
-        *,
+        /, *,
         options: Options | None = None,
         from_decorator: bool = False,
     ):
@@ -2138,8 +2135,8 @@ class Logger:
 
         current_datetime = aware_now()
 
-        file_name = basename(co_filename)
-        thread = current_thread()
+        file_name = os.path.basename(co_filename)
+        thread = threading.current_thread()
         process = current_process()
         elapsed = current_datetime - start_time
 
@@ -2163,7 +2160,7 @@ class Logger:
             "level": RecordLevel(level_name, level_no, level_icon),
             "line": f_lineno,
             "message": str(message),
-            "module": splitext(file_name)[0],
+            "module": os.path.splitext(file_name)[0],
             "name": name,
             "process": RecordProcess(process.ident, process.name),
             "thread": RecordThread(thread.ident, thread.name),
@@ -2208,11 +2205,11 @@ class Logger:
 
     def trace(self, __message, *args, **kwargs):
         r"""Log ``message.format(*args, **kwargs)`` with severity ``'TRACE'``."""
-        self._log("TRACE", self._options, __message, args, kwargs)
+        self._log("TRACE", __message, args, kwargs)
 
     def debug(self, __message, *args, **kwargs):
         r"""Log ``message.format(*args, **kwargs)`` with severity ``'DEBUG'``."""
-        self._log("DEBUG", self._options, __message, args, kwargs)
+        self._log("DEBUG", __message, args, kwargs)
 
     def info(self, __message, *args, **kwargs):
         r"""Log ``message.format(*args, **kwargs)`` with severity ``'INFO'``."""

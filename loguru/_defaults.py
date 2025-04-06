@@ -5,16 +5,16 @@ _T = t.TypeVar('_T', str, bool, int)
 
 
 @t.overload
-def env(key: str, type_: type[_T], default: _T) -> _T:
+def env(key: str, type_: type[_T], /, default: _T) -> _T:
     ...
 
 
 @t.overload
-def env(key: str, type_: type[_T], default: None = None) -> _T | None:
+def env(key: str, type_: type[_T], /, default: None = None) -> _T | None:
     ...
 
 
-def env(key: str, type_: type[_T], default=None) -> _T:
+def env(key: str, type_: type[_T], /, default=None) -> _T:
     if key not in os.environ:
         return default
 
@@ -58,6 +58,14 @@ LOGURU_DIAGNOSE = env("LOGURU_DIAGNOSE", bool, True)
 LOGURU_ENQUEUE = env("LOGURU_ENQUEUE", bool, False)
 LOGURU_CONTEXT = env("LOGURU_CONTEXT", str, None)
 LOGURU_CATCH = env("LOGURU_CATCH", bool, True)
+
+LOGURU_CATCH_MESSAGE = env(
+    "LOGURU_CATCH_MESSAGE",
+    str,
+    "An error has been caught in function '{record[function]}', "
+    "process '{record[process].name}' ({record[process].id}), "
+    "thread '{record[thread].name}' ({record[thread].id}):",
+)
 
 LOGURU_TRACE_NO = env("LOGURU_TRACE_NO", int, 5)
 LOGURU_TRACE_COLOR = env("LOGURU_TRACE_COLOR", str, "<cyan><bold>")
