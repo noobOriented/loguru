@@ -93,6 +93,7 @@
 .. _FORCE_COLOR: https://force-color.org/
 
 """
+from __future__ import annotations
 
 import builtins
 import contextlib
@@ -294,7 +295,7 @@ class Logger:
         enqueue: bool = _defaults.LOGURU_ENQUEUE,
         context: str | BaseContext | None = _defaults.LOGURU_CONTEXT,
         catch: bool = _defaults.LOGURU_CATCH,
-        **kwargs
+        **kwargs,
     ) -> int:
         r"""Add a handler sending log messages to a sink adequately configured.
 
@@ -1294,17 +1295,22 @@ class Logger:
                 if exclude is not None and issubclass(type_, exclude):
                     return False
 
-                from_decorator = self._from_decorator
-                _, depth, _, *options = logger._options
-
-                if from_decorator:
+                depth = logger._options.depth
+                if self._from_decorator:
                     depth += 1
 
-                catch_options = [(type_, value, traceback_), depth, True, *options]
+                catch_options = logger._options._replace(
+                    exception=(type_, value, traceback_),
+                    deptp=depth,
+                    lazy=True,
+                )
 
                 logger._core.thread_locals.already_logging_exception = True
                 try:
-                    logger._log(level, from_decorator, catch_options, message, (), {})
+                    logger._log(
+                        level, message, (), {},
+                        options=catch_options, from_decorator=self._from_decorator,
+                    )
                 finally:
                     logger._core.thread_locals.already_logging_exception = False
 
@@ -2056,8 +2062,15 @@ class Logger:
                 buffer = buffer[end:]
                 yield from matches[:-1]
 
-    def _log(self, level: str | int, from_decorator: bool, options: Options, message, args, kwargs):
+    def _log(
+        self,
+        level: str | int, message: str | object, args: t.Sequence, kwargs: dict,
+        *,
+        options: Options | None = None,
+        from_decorator: bool = False,
+    ):
         core = self._core
+        options = options or self._options
 
         if not core.handlers:
             return
@@ -2195,31 +2208,31 @@ class Logger:
 
     def trace(self, __message, *args, **kwargs):
         r"""Log ``message.format(*args, **kwargs)`` with severity ``'TRACE'``."""
-        self._log("TRACE", False, self._options, __message, args, kwargs)
+        self._log("TRACE", self._options, __message, args, kwargs)
 
     def debug(self, __message, *args, **kwargs):
         r"""Log ``message.format(*args, **kwargs)`` with severity ``'DEBUG'``."""
-        self._log("DEBUG", False, self._options, __message, args, kwargs)
+        self._log("DEBUG", self._options, __message, args, kwargs)
 
     def info(self, __message, *args, **kwargs):
         r"""Log ``message.format(*args, **kwargs)`` with severity ``'INFO'``."""
-        self._log("INFO", False, self._options, __message, args, kwargs)
+        self._log("INFO", __message, args, kwargs)
 
     def success(self, __message, *args, **kwargs):
         r"""Log ``message.format(*args, **kwargs)`` with severity ``'SUCCESS'``."""
-        self._log("SUCCESS", False, self._options, __message, args, kwargs)
+        self._log("SUCCESS", __message, args, kwargs)
 
     def warning(self, __message, *args, **kwargs):
         r"""Log ``message.format(*args, **kwargs)`` with severity ``'WARNING'``."""
-        self._log("WARNING", False, self._options, __message, args, kwargs)
+        self._log("WARNING", __message, args, kwargs)
 
     def error(self, __message, *args, **kwargs):
         r"""Log ``message.format(*args, **kwargs)`` with severity ``'ERROR'``."""
-        self._log("ERROR", False, self._options, __message, args, kwargs)
+        self._log("ERROR", __message, args, kwargs)
 
     def critical(self, __message, *args, **kwargs):
         r"""Log ``message.format(*args, **kwargs)`` with severity ``'CRITICAL'``."""
-        self._log("CRITICAL", False, self._options, __message, args, kwargs)
+        self._log("CRITICAL", __message, args, kwargs)
 
     def exception(self, __message, *args, **kwargs):
         r"""Log an ``'ERROR'`` message while also capturing the currently handled exception.
@@ -2228,12 +2241,14 @@ class Logger:
         an ``except`` block. To log an exception that has already been caught, use the ``exception``
         argument of |opt| along with a call to the |error| method (for example).
         """
-        options = self._options._replace(exception=True)
-        self._log("ERROR", False, options, __message, args, kwargs)
+        self._log(
+            "ERROR", __message, args, kwargs,
+            options=self._options._replace(exception=True),
+        )
 
     def log(self, __level: int | str, __message, *args, **kwargs):
         r"""Log ``message.format(*args, **kwargs)`` with severity ``level``."""
-        self._log(__level, False, self._options, __message, args, kwargs)
+        self._log(__level, __message, args, kwargs)
 
     def start(self, *args, **kwargs):
         """Add a handler sending log messages to a sink adequately configured.
